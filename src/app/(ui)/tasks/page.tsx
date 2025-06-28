@@ -53,6 +53,10 @@ export default function taskPage() {
     
     // Loading state
     const [loading, setLoading] = useState(false);
+    
+    // Individual task loading and error states
+    const [taskLoadingStates, setTaskLoadingStates] = useState<Record<number, boolean>>({});
+    const [taskErrors, setTaskErrors] = useState<Record<number, string>>({});
 
     // Fetch tasks with pagination
     const fetchTasks = async () => {
@@ -94,20 +98,46 @@ export default function taskPage() {
     }, [currentPage, itemsPerPage, filterStatus, sortConfig]);
 
     const deleteTask = async (id: number) => {
-        const res = await fetch(`/api/actions/${id}`, {
-            method: 'DELETE',
-            headers: {
-                'Content-Type': 'application/json',
-                'Accept': 'application/json',
-            },
-        });
-        const response = await res.json();
-        if (!res.ok) {
-            console.error('Failed to delete task:', response.error);
-            return;
+        // Set loading state for specific task
+        setTaskLoadingStates(prev => ({ ...prev, [id]: true }));
+        
+        try {
+            const res = await fetch(`/api/actions/${id}`, {
+                method: 'DELETE',
+                headers: {
+                    'Content-Type': 'application/json',
+                    'Accept': 'application/json',
+                },
+            });
+            
+            if (!res.ok) {
+                const response = await res.json();
+                throw new Error(response.error || 'Failed to delete task');
+            }
+            
+            // Remove task from local state - no page reload!
+            setTask(prevTasks => prevTasks.filter(task => task.id !== id));
+            
+            // Clear any loading/error states for this task
+            setTaskLoadingStates(prev => {
+                const newState = { ...prev };
+                delete newState[id];
+                return newState;
+            });
+            setTaskErrors(prev => {
+                const newState = { ...prev };
+                delete newState[id];
+                return newState;
+            });
+            
+        } catch (error) {
+            console.error('Error deleting task:', error);
+            setTaskErrors(prev => ({
+                ...prev,
+                [id]: error instanceof Error ? error.message : 'Failed to delete task'
+            }));
+            setTaskLoadingStates(prev => ({ ...prev, [id]: false }));
         }
-        // Refresh the current page
-        fetchTasks();
     };
 
     const addTask = async () => {
@@ -116,9 +146,13 @@ export default function taskPage() {
             alert('Please enter a task');
             return;
         }
+        
         const newTask = {
             description: taskInput,
         };
+        
+        // Set loading state for add button
+        setLoading(true);
         
         try {
             const res = await fetch('/api/actions', {
@@ -132,15 +166,31 @@ export default function taskPage() {
 
             if (!res.ok) {
                 const errorData = await res.json();
-                console.error('Failed to add task:', errorData.error);
-                return;
+                throw new Error(errorData.error || 'Failed to add task');
             }
 
+            const createdTaskData = await res.json();
+            const createdTask = createdTaskData[0]; // API returns array with new task
+            
+            // Add new task to local state - no page reload!
+            // Insert at beginning to match typical "newest first" behavior
+            setTask(prevTasks => [createdTask, ...prevTasks]);
+            
+            // Update pagination count
+            setPagination(prev => ({
+                ...prev,
+                totalCount: prev.totalCount + 1,
+                totalPages: Math.ceil((prev.totalCount + 1) / prev.limit)
+            }));
+
+            // Clear input
             (document.getElementById('taskinput') as HTMLInputElement)!.value = '';
-            // Refresh the current page
-            fetchTasks();
+            
         } catch (error) {
             console.error('Error adding task:', error);
+            alert('Error adding task: ' + (error instanceof Error ? error.message : 'Unknown error'));
+        } finally {
+            setLoading(false);
         }
     };
 
@@ -154,6 +204,12 @@ export default function taskPage() {
         if (newDescription === taskToEdit.description) {
             return; // No changes made
         }
+        
+        // Clear any previous errors for this task
+        setTaskErrors(prev => ({ ...prev, [taskToEdit.id]: '' }));
+        
+        // Set loading state for specific task
+        setTaskLoadingStates(prev => ({ ...prev, [taskToEdit.id]: true }));
         
         const updatedTask = {
             ...taskToEdit,
@@ -172,22 +228,46 @@ export default function taskPage() {
 
             if (!response.ok) {
                 const errorData = await response.json();
-                console.error('Failed to update task:', errorData.error);
-                return;
+                throw new Error(errorData.error || 'Failed to update task');
             }
             
-            // Refresh the current page
-            fetchTasks();
+            const updatedTaskData = await response.json();
+            
+            // Update only the specific task in local state - no page reload!
+            setTask(prevTasks =>
+                prevTasks.map(task =>
+                    task.id === taskToEdit.id
+                        ? {
+                            ...task,
+                            description: newDescription,
+                            updatedAt: updatedTaskData[0]?.updatedAt || new Date().toISOString()
+                        }
+                        : task
+                )
+            );
+            
         } catch (error) {
             console.error('Error updating task:', error);
+            setTaskErrors(prev => ({
+                ...prev,
+                [taskToEdit.id]: error instanceof Error ? error.message : 'Failed to update task'
+            }));
+        } finally {
+            setTaskLoadingStates(prev => ({ ...prev, [taskToEdit.id]: false }));
         }
     };
 
-    const updateTaskStatus = async (taskId: number, status: string) => {
-        if (!statusOptions.includes(status)) {
-            alert('Invalid status: ' + status);
+    const updateTaskStatus = async (taskId: number, newStatus: string) => {
+        if (!statusOptions.includes(newStatus)) {
+            alert('Invalid status: ' + newStatus);
             return;
         }
+        
+        // Clear any previous errors for this task
+        setTaskErrors(prev => ({ ...prev, [taskId]: '' }));
+        
+        // Set loading state for specific task
+        setTaskLoadingStates(prev => ({ ...prev, [taskId]: true }));
         
         try {
             const response = await fetch(`/api/actions/${taskId}`, {
@@ -196,20 +276,38 @@ export default function taskPage() {
                     'Content-Type': 'application/json',
                     'Accept': 'application/json',
                 },
-                body: JSON.stringify({ status }),
+                body: JSON.stringify({ status: newStatus }),
             });
 
             if (!response.ok) {
                 const errorData = await response.json();
-                console.error('Failed to update task status:', errorData.error);
-                return;
+                throw new Error(errorData.error || 'Failed to update task status');
             }
             
-            // Refresh the current page
-            fetchTasks();
+            const updatedTaskData = await response.json();
+            
+            // Update only the specific task in local state - no page reload!
+            setTask(prevTasks =>
+                prevTasks.map(task =>
+                    task.id === taskId
+                        ? {
+                            ...task,
+                            status: newStatus,
+                            updatedAt: updatedTaskData[0]?.updatedAt || new Date().toISOString()
+                        }
+                        : task
+                )
+            );
+            
         } catch (error) {
             console.error('Error updating task status:', error);
-            alert('Error updating task status: ' + (error instanceof Error ? error.message : 'Unknown error'));
+            // Show user-friendly error without losing context
+            setTaskErrors(prev => ({
+                ...prev,
+                [taskId]: error instanceof Error ? error.message : 'Unknown error'
+            }));
+        } finally {
+            setTaskLoadingStates(prev => ({ ...prev, [taskId]: false }));
         }
     };
 
@@ -353,17 +451,47 @@ export default function taskPage() {
                                 <td className="px-5 py-3 border border-black-300 border-dotted text-center">{item.id}</td>
                                 <td className="px-5 py-3 border border-black-300 border-dotted text-left">{item.description}</td>
                                 <td className="px-5 py-3 border border-black-300 border-dotted text-center">
-                                    <select
-                                        value={item.status}
-                                        onChange={(e) => updateTaskStatus(item.id, e.target.value)}
-                                        className="w-full px-4 py-2 border border-green-300 bg-white text-black rounded-md shadow-sm focus:outline-none focus:ring-2 focus:ring-green-400 transition duration-200 hover:cursor-pointer"
-                                    >
-                                        {statusOptions.map((status) => (
-                                            <option key={status} value={status}>
-                                                {status.replace('-', ' ').toUpperCase()}
-                                            </option>
-                                        ))}
-                                    </select>
+                                    <div className="relative">
+                                        <select
+                                            value={item.status}
+                                            onChange={(e) => updateTaskStatus(item.id, e.target.value)}
+                                            disabled={taskLoadingStates[item.id]}
+                                            className={`w-full px-4 py-2 border rounded-md shadow-sm focus:outline-none focus:ring-2 focus:ring-green-400 transition duration-200 ${
+                                                taskLoadingStates[item.id]
+                                                    ? 'bg-gray-100 cursor-not-allowed text-gray-500'
+                                                    : 'bg-white hover:cursor-pointer text-black'
+                                            } ${
+                                                taskErrors[item.id]
+                                                    ? 'border-red-500'
+                                                    : 'border-green-300'
+                                            }`}
+                                        >
+                                            {statusOptions.map((status) => (
+                                                <option key={status} value={status}>
+                                                    {status.replace('-', ' ').toUpperCase()}
+                                                </option>
+                                            ))}
+                                        </select>
+                                        
+                                        {taskLoadingStates[item.id] && (
+                                            <div className="absolute right-2 top-1/2 transform -translate-y-1/2">
+                                                <div className="animate-spin h-4 w-4 border-2 border-green-500 border-t-transparent rounded-full"></div>
+                                            </div>
+                                        )}
+                                        
+                                        {taskErrors[item.id] && (
+                                            <div className="absolute top-full left-0 mt-1 text-xs text-red-600 bg-red-50 px-2 py-1 rounded border border-red-200 shadow-sm z-10 min-w-max">
+                                                {taskErrors[item.id]}
+                                                <button
+                                                    onClick={() => setTaskErrors(prev => ({ ...prev, [item.id]: '' }))}
+                                                    className="ml-2 text-red-800 hover:text-red-900 font-bold"
+                                                    title="Dismiss error"
+                                                >
+                                                    ×
+                                                </button>
+                                            </div>
+                                        )}
+                                    </div>
                                 </td>
                                 <td className="px-5 py-3 border border-black-300 border-dotted text-center">
                                     {new Date(item.createdAt).toLocaleDateString('en-US', {
@@ -376,17 +504,39 @@ export default function taskPage() {
                                     <div className="flex gap-2 justify-center">
                                         <button
                                             onClick={() => editTask(item)}
-                                            className="px-4 py-2 bg-yellow-200 text-black rounded-md hover:bg-yellow-400 transition duration-200 hover:cursor-pointer"
+                                            disabled={taskLoadingStates[item.id]}
+                                            className={`px-4 py-2 rounded-md transition duration-200 ${
+                                                taskLoadingStates[item.id]
+                                                    ? 'bg-gray-200 text-gray-500 cursor-not-allowed'
+                                                    : 'bg-yellow-200 text-black hover:bg-yellow-400 hover:cursor-pointer'
+                                            }`}
                                         >
-                                            Edit
+                                            {taskLoadingStates[item.id] ? 'Editing...' : 'Edit'}
                                         </button>
                                         <button
                                             onClick={() => deleteTask(item.id)}
-                                            className="px-4 py-2 bg-red-200 text-black rounded-md hover:bg-red-400 transition duration-200 hover:cursor-pointer"
+                                            disabled={taskLoadingStates[item.id]}
+                                            className={`px-4 py-2 rounded-md transition duration-200 ${
+                                                taskLoadingStates[item.id]
+                                                    ? 'bg-gray-200 text-gray-500 cursor-not-allowed'
+                                                    : 'bg-red-200 text-black hover:bg-red-400 hover:cursor-pointer'
+                                            }`}
                                         >
-                                            Delete
+                                            {taskLoadingStates[item.id] ? 'Deleting...' : 'Delete'}
                                         </button>
                                     </div>
+                                    {taskErrors[item.id] && (
+                                        <div className="mt-2 text-xs text-red-600 bg-red-50 px-2 py-1 rounded border border-red-200">
+                                            {taskErrors[item.id]}
+                                            <button
+                                                onClick={() => setTaskErrors(prev => ({ ...prev, [item.id]: '' }))}
+                                                className="ml-2 text-red-800 hover:text-red-900 font-bold"
+                                                title="Dismiss error"
+                                            >
+                                                ×
+                                            </button>
+                                        </div>
+                                    )}
                                 </td>
                             </tr>
                         ))}
