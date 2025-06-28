@@ -51,6 +51,9 @@ export default function taskPage() {
         direction: 'asc' | 'desc';
     }>({ key: 'createdAt', direction: 'desc' });
     
+    // Store original unsorted tasks
+    const [originalTasks, setOriginalTasks] = useState<Task[]>([]);
+    
     // Loading state
     const [loading, setLoading] = useState(false);
     
@@ -65,9 +68,7 @@ export default function taskPage() {
             const params = new URLSearchParams({
                 page: currentPage.toString(),
                 limit: itemsPerPage.toString(),
-                status: filterStatus,
-                sortBy: sortConfig.key || 'createdAt',
-                sortOrder: sortConfig.direction
+                status: filterStatus
             });
 
             const response = await fetch(`/api/actions?${params}`, {
@@ -83,6 +84,7 @@ export default function taskPage() {
             }
 
             const data: TasksResponse = await response.json();
+            setOriginalTasks(data.tasks);
             setTask(data.tasks);
             setPagination(data.pagination);
         } catch (error) {
@@ -92,10 +94,49 @@ export default function taskPage() {
         }
     };
 
-    // Fetch tasks when dependencies change
+    // Fetch tasks when dependencies change (removed sortConfig from dependencies)
     useEffect(() => {
         fetchTasks();
-    }, [currentPage, itemsPerPage, filterStatus, sortConfig]);
+    }, [currentPage, itemsPerPage, filterStatus]);
+    
+    // Client-side sorting effect
+    useEffect(() => {
+        if (originalTasks.length > 0) {
+            const sortedTasks = [...originalTasks].sort((a, b) => {
+                if (!sortConfig.key) return 0;
+                
+                let aValue: string | number;
+                let bValue: string | number;
+                
+                switch (sortConfig.key) {
+                    case 'id':
+                        aValue = a.id;
+                        bValue = b.id;
+                        break;
+                    case 'description':
+                        aValue = a.description.toLowerCase();
+                        bValue = b.description.toLowerCase();
+                        break;
+                    case 'createdAt':
+                        aValue = new Date(a.createdAt).getTime();
+                        bValue = new Date(b.createdAt).getTime();
+                        break;
+                    default:
+                        return 0;
+                }
+                
+                if (aValue < bValue) {
+                    return sortConfig.direction === 'asc' ? -1 : 1;
+                }
+                if (aValue > bValue) {
+                    return sortConfig.direction === 'asc' ? 1 : -1;
+                }
+                return 0;
+            });
+            
+            setTask(sortedTasks);
+        }
+    }, [sortConfig, originalTasks]);
 
     const deleteTask = async (id: number) => {
         // Set loading state for specific task
@@ -115,8 +156,9 @@ export default function taskPage() {
                 throw new Error(response.error || 'Failed to delete task');
             }
             
-            // Remove task from local state - no page reload!
+            // Remove task from both local states - no page reload!
             setTask(prevTasks => prevTasks.filter(task => task.id !== id));
+            setOriginalTasks(prevTasks => prevTasks.filter(task => task.id !== id));
             
             // Clear any loading/error states for this task
             setTaskLoadingStates(prev => {
@@ -172,8 +214,9 @@ export default function taskPage() {
             const createdTaskData = await res.json();
             const createdTask = createdTaskData[0]; // API returns array with new task
             
-            // Add new task to local state - no page reload!
+            // Add new task to both local states - no page reload!
             // Insert at beginning to match typical "newest first" behavior
+            setOriginalTasks(prevTasks => [createdTask, ...prevTasks]);
             setTask(prevTasks => [createdTask, ...prevTasks]);
             
             // Update pagination count
@@ -233,9 +276,9 @@ export default function taskPage() {
             
             const updatedTaskData = await response.json();
             
-            // Update only the specific task in local state - no page reload!
-            setTask(prevTasks =>
-                prevTasks.map(task =>
+            // Update only the specific task in both local states - no page reload!
+            const updateTaskInArray = (tasks: Task[]) =>
+                tasks.map(task =>
                     task.id === taskToEdit.id
                         ? {
                             ...task,
@@ -243,8 +286,10 @@ export default function taskPage() {
                             updatedAt: updatedTaskData[0]?.updatedAt || new Date().toISOString()
                         }
                         : task
-                )
-            );
+                );
+            
+            setOriginalTasks(updateTaskInArray);
+            setTask(updateTaskInArray);
             
         } catch (error) {
             console.error('Error updating task:', error);
@@ -286,9 +331,9 @@ export default function taskPage() {
             
             const updatedTaskData = await response.json();
             
-            // Update only the specific task in local state - no page reload!
-            setTask(prevTasks =>
-                prevTasks.map(task =>
+            // Update only the specific task in both local states - no page reload!
+            const updateTaskInArray = (tasks: Task[]) =>
+                tasks.map(task =>
                     task.id === taskId
                         ? {
                             ...task,
@@ -296,8 +341,10 @@ export default function taskPage() {
                             updatedAt: updatedTaskData[0]?.updatedAt || new Date().toISOString()
                         }
                         : task
-                )
-            );
+                );
+            
+            setOriginalTasks(updateTaskInArray);
+            setTask(updateTaskInArray);
             
         } catch (error) {
             console.error('Error updating task status:', error);
@@ -320,7 +367,7 @@ export default function taskPage() {
         }
         
         setSortConfig({ key, direction });
-        setCurrentPage(1); // Reset to first page when sorting
+        // Note: No need to reset page for client-side sorting since we're not fetching new data
     };
 
     const getSortIcon = (columnKey: 'id' | 'description' | 'createdAt') => {
